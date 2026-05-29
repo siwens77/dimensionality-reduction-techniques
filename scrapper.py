@@ -14,6 +14,7 @@ import plotly.express as px
 import pandas as pd
 from sklearn.manifold import TSNE
 import numpy as np
+import umap.umap_ as umap
 
 
 def scrapper():
@@ -131,3 +132,38 @@ def tsne_display(embeddings, image_labels):
     fig.show()
 
 tsne_display(embeddings, labels)
+
+def umap_display(embeddings, labels):
+    umap_reducer = umap.UMAP(
+        n_components=2,
+        n_neighbors=30,
+        min_dist=0.1,
+        random_state=42,
+    )
+
+    umap_embeddings = umap_reducer.fit_transform(embeddings)
+
+    umap_df = pd.DataFrame({
+        "index": range(0, embeddings.shape[0]),
+        "UMAP1": umap_embeddings[:, 0],
+        "UMAP2": umap_embeddings[:, 1],
+        "label": labels,
+    })
+
+    fig = px.scatter(
+        umap_df,
+        x="UMAP1",
+        y="UMAP2",
+        color="label",
+        hover_name="label",
+        title="UMAP projection of image embeddings",
+        labels={
+            "UMAP1": "UMAP dimension 1",
+            "UMAP2": "UMAP dimension 2",
+        },
+        hover_data=["index"],
+    )
+
+    fig.show()
+
+umap_display(embeddings, labels)
