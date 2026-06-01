@@ -43,7 +43,6 @@ def scrapper():
             f.write(resp.content)
 
 
-
 def embedder2(path_to_img):
     processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
     model = AutoModel.from_pretrained('facebook/dinov2-base')
