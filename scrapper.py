@@ -43,6 +43,65 @@ def scrapper():
             f.write(resp.content)
 
 
+
+def fetch_champions_with_faction_and_splash():
+    universe_url = (
+        "https://universe-meeps.leagueoflegends.com/v1/en_gb/search/index.json"
+    )
+
+    ddragon_url = (
+        "https://ddragon.leagueoflegends.com/cdn/15.12.1/data/en_US/champion.json"
+    )
+
+    print("Loading Universe data...")
+    universe_data = requests.get(universe_url).json()
+
+    print("Loading Data Dragon data...")
+    ddragon_data = requests.get(ddragon_url).json()["data"]
+
+    name_to_id = {
+        info["name"]: champ_id
+        for champ_id, info in ddragon_data.items()
+    }
+
+    champions = universe_data.get("champions", [])
+
+    champion_info = []
+
+    for champ in champions:
+        name = champ.get("name")
+
+        faction = champ.get("associated-faction-slug")
+
+        if not faction:
+            faction = "runeterra"
+
+        champion_id = name_to_id.get(name)
+
+        if not champion_id:
+            print(f"Skipping {name} (no Riot ID match)")
+            continue
+
+        splash_url = (
+            f"https://ddragon.leagueoflegends.com/cdn/img/champion/loading/"
+            f"{champion_id}_0.jpg"
+        )
+
+        champion_info.append({
+            "name": name.lower().replace(" ", "").replace("'", ""),
+            "faction": faction,
+            "splash": splash_url
+        })
+
+    print(f"\nLoaded {len(champion_info)} champions.\n")
+
+
+    return champion_info
+
+
+champion_info = fetch_champions_with_faction_and_splash()
+
+
 def embedder2(path_to_img):
     processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
     model = AutoModel.from_pretrained('facebook/dinov2-base')
@@ -73,7 +132,12 @@ def embedder2(path_to_img):
 embeddings, labels = embedder2("heros")
 embeddings = np.array(embeddings)
 
-def pca_display(embeddings, labels):
+name_to_faction = {champ['name']: champ['faction'].capitalize() for champ in champion_info}
+factions = []
+for hero_name in labels:
+    factions.append(name_to_faction.get(hero_name, "Runeterra"))
+
+def pca_display(embeddings, labels, factions):
 
     pca = PCA(n_components=2)
     pca_embeddings = pca.fit_transform(embeddings)
@@ -82,14 +146,15 @@ def pca_display(embeddings, labels):
     pca_df = pd.DataFrame({
         "PC1": pca_embeddings[:, 0],
         "PC2": pca_embeddings[:, 1],
-        "Hero": labels
+        "Hero": labels,
+        "Faction": factions
     })
 
     fig = px.scatter(
         pca_df,
         x="PC1",
         y="PC2",
-        color="Hero",
+        color="Faction",
         hover_name="Hero",
         title="PCA projection of image embeddings",
         labels={
@@ -100,11 +165,7 @@ def pca_display(embeddings, labels):
     fig.show()
 
 
-pca_display(embeddings, labels)
-
-
-
-def tsne_display(embeddings, image_labels):
+def tsne_display(embeddings, image_labels, factions):
     tsne = TSNE(n_components=2,  perplexity=30) # random_state=42,
     tsne_embeddings = tsne.fit_transform(embeddings)
 
@@ -113,13 +174,14 @@ def tsne_display(embeddings, image_labels):
         "TSNE1": tsne_embeddings[:, 0],
         "TSNE2": tsne_embeddings[:, 1],
         "label": image_labels,
+        "Factions" :factions,
     })
 
     fig = px.scatter(
         tsne_df,
         x="TSNE1",
         y="TSNE2",
-        color="label",
+        color="Factions",
         hover_name="label",
         title="t-SNE projection of image embeddings",
         labels={
@@ -130,9 +192,8 @@ def tsne_display(embeddings, image_labels):
     )
     fig.show()
 
-tsne_display(embeddings, labels)
 
-def umap_display(embeddings, labels):
+def umap_display(embeddings, labels, factions):
     umap_reducer = umap.UMAP(
         n_components=2,
         n_neighbors=30,
@@ -147,13 +208,14 @@ def umap_display(embeddings, labels):
         "UMAP1": umap_embeddings[:, 0],
         "UMAP2": umap_embeddings[:, 1],
         "label": labels,
+        "Factions": factions,
     })
 
     fig = px.scatter(
         umap_df,
         x="UMAP1",
         y="UMAP2",
-        color="label",
+        color="Factions",
         hover_name="label",
         title="UMAP projection of image embeddings",
         labels={
@@ -165,4 +227,9 @@ def umap_display(embeddings, labels):
 
     fig.show()
 
-umap_display(embeddings, labels)
+
+
+
+pca_display(embeddings, labels, factions)
+tsne_display(embeddings, labels, factions)
+umap_display(embeddings, labels, factions)
