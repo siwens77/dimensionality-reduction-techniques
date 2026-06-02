@@ -1,26 +1,31 @@
-import scrapy
-import json
-from urllib.request import urlopen
-from bs4 import BeautifulSoup
-import requests 
-import re
-from transformers import pipeline,  AutoImageProcessor, AutoModel
 import os
-from os import listdir
+from os import listdir 
+import json
 import glob
-from PIL import Image
-import torch
-from sklearn.decomposition import PCA
-import plotly.express as px
-import pandas as pd
-from sklearn.manifold import TSNE
+import re
+from urllib.request import urlopen
+import requests
+import scrapy
+from bs4 import BeautifulSoup
 import numpy as np
-import umap.umap_ as umap
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score, davies_bouldin_score
-from plotly.subplots import make_subplots
-import plotly.graph_objects as go
 from numpy.typing import NDArray
+import pandas as pd
+import torch
+from transformers import pipeline, AutoImageProcessor, AutoModel
+from torchvision import transforms
+from PIL import Image
+import umap.umap_ as umap
+from sklearn import cluster
+from sklearn.cluster import KMeans
+from sklearn.mixture import GaussianMixture
+from sklearn.neighbors import NearestNeighbors
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.metrics import silhouette_score, davies_bouldin_score
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from tqdm import tqdm
 
 
 def scrapper():
@@ -446,6 +451,188 @@ def find_optimal_clusters(embeddings: NDArray, max_clusters: int = 10, random_st
 
     return fig, optimal_k
 
+def project_vectors(data: NDArray, technique: str = "tsne", **options) -> NDArray:
+    if technique == "pca":
+        options.pop("random_state", None) if technique == "pca" else None
+        transformer = PCA(**options)
+    elif technique == "tsne":
+        transformer = TSNE(**options)
+    elif technique == "umap":
+        transformer = umap_module.UMAP(**options)
+    else:
+        raise ValueError(
+            f"Invalid technique: {technique}. Choose from 'pca', 'tsne', or 'umap'."
+        )
+    return transformer.fit_transform(data)
+
+def cluster_embeddings(embeddings: NDArray, algorithm_name: str = 'KMeans', **kwargs):
+    """
+    Clusters embeddings using a specified clustering algorithm from sklearn.
+
+    Parameters:
+    -----------
+    embeddings : numpy.ndarray
+        The embeddings to cluster, shape (n_samples, n_features)
+    algorithm_name : str
+        Name of the clustering algorithm to use (must be available in sklearn.cluster
+        or be GaussianMixture)
+    **kwargs :
+        Additional parameters to pass to the clustering algorithm
+
+    Returns:
+    --------
+    labels : numpy.ndarray
+        Cluster labels for each embedding, shape (n_samples,)
+    model : object
+        The fitted clustering model
+    """
+    if not isinstance(embeddings, np.ndarray):
+        raise TypeError("Embeddings must be a numpy array")
+
+    if len(embeddings.shape) != 2:
+        raise ValueError(f"Embeddings must be 2D array, got shape {embeddings.shape}")
+
+    if algorithm_name == 'GaussianMixture':
+        algorithm_class = GaussianMixture
+    else:
+        try:
+            algorithm_class = getattr(cluster, algorithm_name)
+        except AttributeError:
+            raise ValueError(f"Algorithm '{algorithm_name}' not found in sklearn.cluster or is not GaussianMixture")
+
+    model = algorithm_class(**kwargs)
+
+    if hasattr(model, 'fit_predict'):
+        labels = model.fit_predict(embeddings)
+    elif hasattr(model, 'fit') and hasattr(model, 'predict'):
+
+        model.fit(embeddings)
+        labels = model.predict(embeddings)
+    else:
+        raise ValueError(f"Algorithm '{algorithm_name}' does not support required methods")
+
+    return labels, model
+
+def plot_embeddings(
+        embeddings: NDArray,
+        clustering_results,
+        symbol: str,
+        color: str,
+        classes: list,
+        reduction_technique: str = "pca",
+        plot_3d: bool = False,
+):
+    n_components = 3 if plot_3d else 2
+
+    if embeddings.shape[1] > n_components:
+        reduced = project_vectors(
+            embeddings,
+            technique=reduction_technique,
+            n_components=n_components,
+            random_state=42,
+        )
+        print(f"Reduced embeddings from {embeddings.shape[1]} to {reduced.shape[1]}")
+    else:
+        reduced = embeddings
+
+    clustering_results = list(map(str, clustering_results))
+
+    df = pd.DataFrame({
+        "x": reduced[:, 0],
+        "y": reduced[:, 1],
+        "class": classes,
+        "cluster_id": clustering_results,
+    })
+
+    if plot_3d:
+        df["z"] = reduced[:, 2]
+
+    df = df.astype({"class": "category", "cluster_id": "category"})
+
+    title = f"{reduction_technique} — Visualization of Embeddings"
+
+    if plot_3d:
+        fig = px.scatter_3d(
+            df, x="x", y="y", z="z",
+            color=color, symbol=symbol,
+            title=title, hover_data=["cluster_id"],
+        )
+    else:
+        fig = px.scatter(
+            df, x="x", y="y",
+            color=color, symbol=symbol,
+            title=title, hover_data=["cluster_id"],
+        )
+
+    fig.update_traces(marker=dict(size=8))
+    fig.update_layout(template="plotly")
+    fig.show()
+
+def estimate_dbscan_eps(embeddings: NDArray, n_samples: int = 1000, k: int = 5, quantile: float = 0.1) -> float:
+    """
+    Estimates a suitable eps parameter for DBSCAN based on k-distance graph.
+
+    Parameters:
+    -----------
+    embeddings : numpy.ndarray
+        The embeddings to analyze, shape (n_samples, n_features)
+    n_samples : int
+        Number of samples to use for estimation (to speed up computation)
+    k : int
+        Number of neighbors to consider
+    quantile : float
+        Quantile to use for selecting the eps value (lower means tighter clusters)
+    plot : bool
+        Whether to generate and display a k-distance plot
+
+    Returns:
+    --------
+    eps : float
+        Estimated eps value for DBSCAN
+    """
+    if embeddings.shape[0] > n_samples:
+        indices = np.random.choice(embeddings.shape[0], n_samples, replace=False)
+        sample_data = embeddings[indices]
+    else:
+        sample_data = embeddings
+
+    nbrs = NearestNeighbors(n_neighbors=k + 1).fit(sample_data)
+    distances, _ = nbrs.kneighbors(sample_data)
+
+    kdistances = np.sort(distances[:, k])
+
+    eps = np.quantile(kdistances, quantile)
+
+    print(f"Estimated eps value: {eps}")
+    return eps
 
 fig, optimal_k = find_optimal_clusters(embeddings, max_clusters=30)
 fig.show()
+
+
+labelsChosen, modelChosen = cluster_embeddings(embeddings,
+                                     'KMeans',
+                                     n_clusters=15)
+
+labelsAlgoritihm, modelAlgorithm = cluster_embeddings(embeddings,
+                                     'DBSCAN',
+                                     eps=estimate_dbscan_eps(embeddings),
+                                     min_samples=5)
+
+plot_embeddings(embeddings,
+                labelsChosen,
+                symbol="class",
+                color="cluster_id",
+                classes=factions,
+                reduction_technique="tsne",
+                plot_3d=False
+                )
+
+plot_embeddings(embeddings,
+                labelsAlgoritihm,
+                symbol="class",
+                color="cluster_id",
+                classes=color_by_column("Gender", df_gender, labels),
+                reduction_technique="tsne",
+                plot_3d=True
+                )
