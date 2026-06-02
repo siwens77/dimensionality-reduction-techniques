@@ -250,11 +250,15 @@ embeddings = np.array(embeddings)
 alias_map = {'monkeyking': 'wukong',}
 
 name_to_faction = {champ['name']: champ['faction'].capitalize() for champ in champion_info}
+# Build factions aligned with labels using the same normalization and alias_map
 factions = []
 for hero_name in labels:
-    factions.append(name_to_faction.get(hero_name, "Runeterra"))
+    norm = normalize_champion_name(hero_name)
+    norm = alias_map.get(norm, norm)
+    factions.append(name_to_faction.get(norm, "Runeterra"))
 
 
+pca_display(embeddings, labels, factions, color_label='Faction')
 
 pca_display(embeddings, labels, color_by_column("Gender", df_gender, labels), color_label='Gender')
 
