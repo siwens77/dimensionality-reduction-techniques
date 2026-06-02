@@ -16,6 +16,11 @@ import pandas as pd
 from sklearn.manifold import TSNE
 import numpy as np
 import umap.umap_ as umap
+from sklearn.cluster import KMeans
+from sklearn.metrics import silhouette_score, davies_bouldin_score
+from plotly.subplots import make_subplots
+import plotly.graph_objects as go
+from numpy.typing import NDArray
 
 
 def scrapper():
@@ -250,12 +255,13 @@ embeddings = np.array(embeddings)
 alias_map = {'monkeyking': 'wukong',}
 
 name_to_faction = {champ['name']: champ['faction'].capitalize() for champ in champion_info}
-# Build factions aligned with labels using the same normalization and alias_map
 factions = []
 for hero_name in labels:
     norm = normalize_champion_name(hero_name)
     norm = alias_map.get(norm, norm)
     factions.append(name_to_faction.get(norm, "Runeterra"))
+
+
 
 
 pca_display(embeddings, labels, factions, color_label='Faction')
@@ -269,3 +275,177 @@ umap_display(embeddings, labels, color_by_column("Attractive?", df_gender, label
 umap_display(embeddings, labels, color_by_column("Muscular?", df_gender, labels), color_label='Muscular?')
 
 tsne_display(embeddings, labels, color_by_column("Primary Role", df_gender, labels), color_label='Primary Role')
+
+
+
+
+
+
+
+
+
+
+def find_optimal_clusters(embeddings: NDArray, max_clusters: int = 10, random_state=42):
+    """
+    Determine the optimal number of clusters for embedding data using multiple methods:
+    1. Elbow Method (inertia)
+    2. Silhouette Score
+    3. Davies-Bouldin Index
+
+    Parameters:
+    -----------
+    embeddings : numpy.ndarray
+        The embedding vectors to cluster, shape (n_samples, n_features)
+    max_clusters : int, optional (default=10)
+        Maximum number of clusters to try
+    random_state : int, optional (default=42)
+        Random seed for KMeans
+
+    Returns:
+    --------
+    fig : plotly.graph_objects.Figure
+        A figure with subplots showing the evaluation metrics
+    optimal_k : dict
+        Dictionary with suggested optimal k values by different methods
+    """
+    # Ensure we have enough data points
+    max_clusters = min(max_clusters, len(embeddings) - 1)
+
+    # Initialize lists to store metrics
+    range_n_clusters = list(range(2, max_clusters + 1))
+    inertia_values = []
+    silhouette_values = []
+    davies_bouldin_values = []
+
+    # Calculate metrics for each number of clusters
+    for n_clusters in range_n_clusters:
+        # Initialize and fit KMeans
+        kmeans = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
+        cluster_labels = kmeans.fit_predict(embeddings)
+
+        # Calculate inertia (within-cluster sum of squares)
+        inertia_values.append(kmeans.inertia_)
+
+        # Calculate silhouette score (higher is better)
+        if len(np.unique(cluster_labels)) > 1:  # Need at least 2 clusters with points
+            silhouette_values.append(silhouette_score(embeddings, cluster_labels))
+        else:
+            silhouette_values.append(0)
+
+        # Calculate Davies-Bouldin index (lower is better)
+        davies_bouldin_values.append(davies_bouldin_score(embeddings, cluster_labels))
+
+    # Find optimal clusters using different methods
+    optimal_k = {}
+
+    inertia_diffs = np.diff(inertia_values)
+    inertia_diffs2 = np.diff(inertia_diffs)
+    optimal_k['elbow'] = range_n_clusters[np.argmin(inertia_diffs2) + 1]
+
+    # Silhouette method (maximize)
+    optimal_k['silhouette'] = range_n_clusters[np.argmax(silhouette_values)]
+
+    # Davies-Bouldin method (minimize)
+    optimal_k['davies_bouldin'] = range_n_clusters[np.argmin(davies_bouldin_values)]
+
+    # Create subplot figure
+    fig = make_subplots(
+        rows=3, cols=1,
+        subplot_titles=(
+            "Elbow Method (Inertia)",
+            "Silhouette Score (higher is better)",
+            "Davies-Bouldin Index (lower is better)"
+        ),
+        vertical_spacing=0.15
+    )
+
+
+    fig.add_trace(
+        go.Scatter(
+            x=range_n_clusters,
+            y=inertia_values,
+            mode='lines+markers',
+            name='Inertia',
+            line=dict(color='blue')
+        ),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[optimal_k['elbow']],
+            y=[inertia_values[range_n_clusters.index(optimal_k['elbow'])]
+               if optimal_k['elbow'] in range_n_clusters else 0],
+            mode='markers',
+            marker=dict(color='red', size=12, symbol='star'),
+            name='Optimal k (Elbow)'
+        ),
+        row=1, col=1
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=range_n_clusters,
+            y=silhouette_values,
+            mode='lines+markers',
+            name='Silhouette Score',
+            line=dict(color='green')
+        ),
+        row=2, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[optimal_k['silhouette']],
+            y=[silhouette_values[range_n_clusters.index(optimal_k['silhouette'])]],
+            mode='markers',
+            marker=dict(color='red', size=12, symbol='star'),
+            name='Optimal k (Silhouette)'
+        ),
+        row=2, col=1
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=range_n_clusters,
+            y=davies_bouldin_values,
+            mode='lines+markers',
+            name='Davies-Bouldin Index',
+            line=dict(color='purple')
+        ),
+        row=3, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=[optimal_k['davies_bouldin']],
+            y=[davies_bouldin_values[range_n_clusters.index(optimal_k['davies_bouldin'])]],
+            mode='markers',
+            marker=dict(color='red', size=12, symbol='star'),
+            name='Optimal k (Davies-Bouldin)'
+        ),
+        row=3, col=1
+    )
+
+    fig.update_layout(
+        title='Optimal Number of Clusters Evaluation',
+        height=800,
+        width=900,
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=-0.2,
+            xanchor="center",
+            x=0.5
+        )
+    )
+
+    fig.update_xaxes(title_text="Number of Clusters")
+
+    fig.update_yaxes(title_text="Inertia", row=1, col=1)
+    fig.update_yaxes(title_text="Silhouette Score", row=2, col=1)
+    fig.update_yaxes(title_text="Davies-Bouldin Index", row=3, col=1)
+
+    return fig, optimal_k
+
+
+fig, optimal_k = find_optimal_clusters(embeddings, max_clusters=30)
+fig.show()
