@@ -7,6 +7,7 @@ import re
 from transformers import pipeline,  AutoImageProcessor, AutoModel
 import os
 from os import listdir
+import glob
 from PIL import Image
 import torch
 from sklearn.decomposition import PCA
@@ -53,10 +54,7 @@ def fetch_champions_with_faction_and_splash():
         "https://ddragon.leagueoflegends.com/cdn/15.12.1/data/en_US/champion.json"
     )
 
-    print("Loading Universe data...")
     universe_data = requests.get(universe_url).json()
-
-    print("Loading Data Dragon data...")
     ddragon_data = requests.get(ddragon_url).json()["data"]
 
     name_to_id = {
@@ -93,16 +91,11 @@ def fetch_champions_with_faction_and_splash():
             "splash": splash_url
         })
 
-    print(f"\nLoaded {len(champion_info)} champions.\n")
-
-
     return champion_info
 
 
-champion_info = fetch_champions_with_faction_and_splash()
 
-
-def embedder2(path_to_img):
+def embedder(path_to_img):
     processor = AutoImageProcessor.from_pretrained('facebook/dinov2-base')
     model = AutoModel.from_pretrained('facebook/dinov2-base')
     all_heros = listdir(path_to_img)
@@ -128,35 +121,36 @@ def embedder2(path_to_img):
 
     return embeddings, labels
 
- 
-embeddings, labels = embedder2("heros")
-embeddings = np.array(embeddings)
 
-name_to_faction = {champ['name']: champ['faction'].capitalize() for champ in champion_info}
-factions = []
-for hero_name in labels:
-    factions.append(name_to_faction.get(hero_name, "Runeterra"))
 
-def pca_display(embeddings, labels, factions):
+def normalize_champion_name(name):
+    if pd.isna(name):
+        return ""
+    s = str(name).lower()
+    s = re.sub(r'[^a-z0-9]', '', s)
+    return s
+
+
+
+def pca_display(embeddings, labels, color_vals, color_label='Color'):
 
     pca = PCA(n_components=2)
     pca_embeddings = pca.fit_transform(embeddings)
-
 
     pca_df = pd.DataFrame({
         "PC1": pca_embeddings[:, 0],
         "PC2": pca_embeddings[:, 1],
         "Hero": labels,
-        "Faction": factions
+        color_label: color_vals
     })
 
     fig = px.scatter(
         pca_df,
         x="PC1",
         y="PC2",
-        color="Faction",
+        color=color_label,
         hover_name="Hero",
-        title="PCA projection of image embeddings",
+        title=f"PCA projection of image embeddings (colored by {color_label})",
         labels={
             "PC1": f"PC1 ({pca.explained_variance_ratio_[0]:.1%} variance)",
             "PC2": f"PC2 ({pca.explained_variance_ratio_[1]:.1%} variance)",
@@ -165,8 +159,8 @@ def pca_display(embeddings, labels, factions):
     fig.show()
 
 
-def tsne_display(embeddings, image_labels, factions):
-    tsne = TSNE(n_components=2,  perplexity=30) # random_state=42,
+def tsne_display(embeddings, image_labels, color_vals, color_label='Color'):
+    tsne = TSNE(n_components=2,  perplexity=30)
     tsne_embeddings = tsne.fit_transform(embeddings)
 
     tsne_df = pd.DataFrame({
@@ -174,16 +168,16 @@ def tsne_display(embeddings, image_labels, factions):
         "TSNE1": tsne_embeddings[:, 0],
         "TSNE2": tsne_embeddings[:, 1],
         "label": image_labels,
-        "Factions" :factions,
+        color_label: color_vals,
     })
 
     fig = px.scatter(
         tsne_df,
         x="TSNE1",
         y="TSNE2",
-        color="Factions",
+        color=color_label,
         hover_name="label",
-        title="t-SNE projection of image embeddings",
+        title=f"t-SNE projection of image embeddings (colored by {color_label})",
         labels={
             "TSNE1": "t-SNE dimension 1",
             "TSNE2": "t-SNE dimension 2",
@@ -193,7 +187,7 @@ def tsne_display(embeddings, image_labels, factions):
     fig.show()
 
 
-def umap_display(embeddings, labels, factions):
+def umap_display(embeddings, labels, color_vals, color_label='Color'):
     umap_reducer = umap.UMAP(
         n_components=2,
         n_neighbors=30,
@@ -208,16 +202,16 @@ def umap_display(embeddings, labels, factions):
         "UMAP1": umap_embeddings[:, 0],
         "UMAP2": umap_embeddings[:, 1],
         "label": labels,
-        "Factions": factions,
+        color_label: color_vals,
     })
 
     fig = px.scatter(
         umap_df,
         x="UMAP1",
         y="UMAP2",
-        color="Factions",
+        color=color_label,
         hover_name="label",
-        title="UMAP projection of image embeddings",
+        title=f"UMAP projection of image embeddings (colored by {color_label})",
         labels={
             "UMAP1": "UMAP dimension 1",
             "UMAP2": "UMAP dimension 2",
@@ -228,8 +222,46 @@ def umap_display(embeddings, labels, factions):
     fig.show()
 
 
+def color_by_column(column, df_gender, labels):
+    mapping = {}
+    if 'Champion Name' in df_gender.columns and column in df_gender.columns:
+        for _, row in df_gender.iterrows():
+            key = normalize_champion_name(row['Champion Name'])
+            mapping[key] = row[column]
+            for alias, canon in alias_map.items():
+                if canon == key:
+                    mapping[alias] = row[column]
+
+    column_list = []
+    for hero_name in labels:
+        norm = normalize_champion_name(hero_name)
+        val = mapping.get(norm, "Unknown")
+        column_list.append(val)
+
+    return column_list
 
 
-pca_display(embeddings, labels, factions)
-tsne_display(embeddings, labels, factions)
-umap_display(embeddings, labels, factions)
+df_gender = pd.read_csv("League of Legends Gender and Sexuality Data - Sheet1.csv")
+champion_info = fetch_champions_with_faction_and_splash()
+
+embeddings, labels = embedder("heros")
+embeddings = np.array(embeddings)
+
+alias_map = {'monkeyking': 'wukong',}
+
+name_to_faction = {champ['name']: champ['faction'].capitalize() for champ in champion_info}
+factions = []
+for hero_name in labels:
+    factions.append(name_to_faction.get(hero_name, "Runeterra"))
+
+
+
+pca_display(embeddings, labels, color_by_column("Gender", df_gender, labels), color_label='Gender')
+
+tsne_display(embeddings, labels, color_by_column("Species", df_gender, labels), color_label='Species')
+
+umap_display(embeddings, labels, color_by_column("Attractive?", df_gender, labels), color_label='Attractive?')
+
+umap_display(embeddings, labels, color_by_column("Muscular?", df_gender, labels), color_label='Muscular?')
+
+tsne_display(embeddings, labels, color_by_column("Primary Role", df_gender, labels), color_label='Primary Role')
